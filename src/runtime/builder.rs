@@ -26,6 +26,7 @@ use super::supervisor::RuntimeSupervisor;
 
 #[derive(Debug, Clone, Default)]
 pub struct WebConfigOverrides {
+    pub tcp_nodelay: Option<bool>,
     pub address: Option<String>,
     pub http_port: Option<u16>,
     pub https_port: Option<u16>,
@@ -36,6 +37,9 @@ pub struct WebConfigOverrides {
 
 impl WebConfigOverrides {
     fn apply(self, config: &mut AppConfig) {
+        if let Some(enabled) = self.tcp_nodelay {
+            config.web.tcp_nodelay = enabled;
+        }
         if let Some(address) = self.address {
             config.web.bind_address = address.clone();
             config.web.bind_addresses = vec![address];

@@ -578,6 +578,7 @@ const vncStreamUrl = computed(() => {
 })
 
 const webServerConfig = ref<WebConfig>({
+  tcp_nodelay: true,
   http_port: 8080,
   https_port: 8443,
   bind_address: '0.0.0.0',
@@ -2137,6 +2138,7 @@ async function saveWebServerConfig() {
   webServerLoading.value = true
   try {
     const updated = await configStore.updateWeb({
+      tcp_nodelay: webServerConfig.value.tcp_nodelay,
       http_port: webServerConfig.value.http_port,
       https_port: webServerConfig.value.https_port,
       https_enabled: webServerConfig.value.https_enabled,
@@ -3830,6 +3832,17 @@ watch(isWindows, () => {
                 <div class="flex items-start justify-between gap-4">
                   <Label>{{ t('settings.httpsEnabled') }}</Label>
                   <Switch v-model="webServerConfig.https_enabled" />
+                </div>
+
+                <Separator />
+
+                <!-- Applies to accepted HTTP and HTTPS TCP sockets after restart -->
+                <div class="flex items-start justify-between gap-4">
+                  <div class="space-y-1">
+                    <Label>{{ t('settings.tcpNodelay') }}</Label>
+                    <p class="text-xs text-muted-foreground">{{ t('settings.tcpNodelayDesc') }}</p>
+                  </div>
+                  <Switch v-model="webServerConfig.tcp_nodelay" />
                 </div>
 
                 <Separator />

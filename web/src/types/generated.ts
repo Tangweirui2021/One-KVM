@@ -176,6 +176,7 @@ export interface StreamConfig {
 }
 
 export interface WebConfig {
+	tcp_nodelay: boolean;
 	http_port: number;
 	https_port: number;
 	bind_addresses: string[];
@@ -759,6 +760,7 @@ export interface WatchdogConfigUpdate {
  * Public API shape: certificate paths on disk are not exposed. The full stored model is `WebConfig` in `config::schema`.
  */
 export interface WebConfigResponse {
+	tcp_nodelay: boolean;
 	http_port: number;
 	https_port: number;
 	bind_addresses: string[];
@@ -769,6 +771,7 @@ export interface WebConfigResponse {
 }
 
 export interface WebConfigUpdate {
+	tcp_nodelay?: boolean;
 	http_port?: number;
 	https_port?: number;
 	bind_addresses?: string[];

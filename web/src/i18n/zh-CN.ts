@@ -704,6 +704,8 @@ export default {
     httpsEnabled: '启用 HTTPS',
     portConfig: '端口与协议',
     portConfigDesc: '服务一次仅监听一个端口，由 HTTPS 开关决定生效端口',
+    tcpNodelay: '低延迟 TCP 传输（TCP_NODELAY）',
+    tcpNodelayDesc: '默认开启以减少 MJPEG 视频和控制消息的等待；关闭可能降低小 TCP 包数量。保存后重启生效。',
     redfishTitle: 'Redfish',
     redfishDesc: 'DMTF Redfish 标准管理接口',
     redfishEnabled: '启用 Redfish API',

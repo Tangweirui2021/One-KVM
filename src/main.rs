@@ -4,6 +4,7 @@ use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
+use axum::serve::ListenerExt;
 use axum_server::tls_openssl::OpenSSLAcceptor;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -57,6 +58,10 @@ struct CliArgs {
     #[arg(long)]
     enable_https: bool,
 
+    /// Configure TCP_NODELAY for new HTTP/HTTPS connections (true or false).
+    #[arg(long, value_name = "BOOL")]
+    tcp_nodelay: Option<bool>,
+
     /// Path to SSL certificate file (generates self-signed if not provided)
     #[arg(long, value_name = "FILE", requires = "ssl_key")]
     ssl_cert: Option<PathBuf>,
@@ -94,6 +99,30 @@ enum UserAction {
     DisableTotp,
 }
 
+/// Apply the option before OpenSSL wraps a TCP stream. Configurable because
+/// axum-server's built-in NoDelayAcceptor always enables the socket option.
+#[derive(Debug, Clone, Copy)]
+struct ConfigurableNoDelayAcceptor {
+    enabled: bool,
+}
+
+impl<S> axum_server::accept::Accept<tokio::net::TcpStream, S>
+    for ConfigurableNoDelayAcceptor
+{
+    type Stream = tokio::net::TcpStream;
+    type Service = S;
+    type Future = std::future::Ready<std::io::Result<(Self::Stream, Self::Service)>>;
+
+    fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
+        if self.enabled {
+            if let Err(err) = stream.set_nodelay(true) {
+                tracing::warn!("Failed to enable TCP_NODELAY on HTTPS connection: {}", err);
+            }
+        }
+        std::future::ready(Ok((stream, service)))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
@@ -117,6 +146,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let overrides = WebConfigOverrides {
+        tcp_nodelay: args.tcp_nodelay,
         address: args.address,
         http_port: args.http_port,
         https_port: args.https_port,
@@ -131,6 +161,8 @@ async fn main() -> anyhow::Result<()> {
     let config = runtime.config();
     let state = runtime.state().clone();
 
+    tracing::info!("Web TCP_NODELAY: {} (changes require a restart)", config.web.tcp_nodelay);
+    let tcp_nodelay = config.web.tcp_nodelay;
     let bind_ips = resolve_bind_addresses(&config.web)?;
     let scheme = if config.web.https_enabled {
         "https"
@@ -209,7 +241,9 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("Starting HTTPS server on {}", local_addr);
 
             let server = axum_server::from_tcp(listener)?
-                .acceptor(OpenSSLAcceptor::new(tls_config.clone()))
+                .acceptor(OpenSSLAcceptor::new(tls_config.clone()).acceptor(
+                    ConfigurableNoDelayAcceptor { enabled: tcp_nodelay },
+                ))
                 .serve(app.clone().into_make_service());
             servers.push(server);
         }
@@ -221,7 +255,14 @@ async fn main() -> anyhow::Result<()> {
             let local_addr = listener.local_addr()?;
             tracing::info!("Starting HTTP server on {}", local_addr);
 
-            let listener = tokio::net::TcpListener::from_std(listener)?;
+            let listener = tokio::net::TcpListener::from_std(listener)?
+                .tap_io(move |stream| {
+                    if tcp_nodelay {
+                        if let Err(err) = stream.set_nodelay(true) {
+                            tracing::warn!("Failed to enable TCP_NODELAY on HTTP connection: {}", err);
+                        }
+                    }
+                });
             let server = axum::serve(listener, app.clone());
             servers.push(async move { server.await });
         }

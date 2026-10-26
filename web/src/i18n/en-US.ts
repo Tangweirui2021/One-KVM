@@ -705,6 +705,8 @@ export default {
     httpsEnabled: 'Enable HTTPS',
     portConfig: 'Port & Protocol',
     portConfigDesc: 'The service listens on a single port at a time, determined by the HTTPS toggle',
+    tcpNodelay: 'Low-latency TCP transport (TCP_NODELAY)',
+    tcpNodelayDesc: 'Enabled by default to reduce MJPEG and control-message latency; disabling may reduce small packets. Save and restart to apply.',
     redfishTitle: 'Redfish',
     redfishDesc: 'DMTF Redfish standard management interface',
     redfishEnabled: 'Enable Redfish API',

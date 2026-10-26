@@ -139,6 +139,8 @@ pub struct WebConfig {
     pub bind_addresses: Vec<String>,
     pub bind_address: String,
     pub https_enabled: bool,
+    /// Disable Nagle on accepted web TCP connections (requires a server restart).
+    pub tcp_nodelay: bool,
     pub ssl_cert_path: Option<String>,
     pub ssl_key_path: Option<String>,
 }
@@ -151,6 +153,7 @@ impl Default for WebConfig {
             bind_addresses: Vec::new(),
             bind_address: "0.0.0.0".to_string(),
             https_enabled: false,
+            tcp_nodelay: true,
             ssl_cert_path: None,
             ssl_key_path: None,
         }
@@ -160,6 +163,23 @@ impl Default for WebConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_tcp_nodelay_default_and_backward_compatibility() {
+        let current = WebConfig::default();
+        assert!(current.tcp_nodelay);
+
+        let mut legacy = serde_json::to_value(&current).unwrap();
+        legacy.as_object_mut().unwrap().remove("tcp_nodelay");
+        let restored: WebConfig = serde_json::from_value(legacy).unwrap();
+        assert!(restored.tcp_nodelay);
+
+        let mut disabled = current;
+        disabled.tcp_nodelay = false;
+        let serialized = serde_json::to_string(&disabled).unwrap();
+        let restored: WebConfig = serde_json::from_str(&serialized).unwrap();
+        assert!(!restored.tcp_nodelay);
+    }
 
     #[test]
     fn msd_inquiry_strings_default_and_validate() {

@@ -1255,6 +1255,7 @@ impl RtspConfigUpdate {
 #[typeshare]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConfigResponse {
+    pub tcp_nodelay: bool,
     pub http_port: u16,
     pub https_port: u16,
     pub bind_addresses: Vec<String>,
@@ -1277,6 +1278,7 @@ impl WebConfigResponse {
                 .map(|p| !p.is_empty())
                 .unwrap_or(false);
         Self {
+            tcp_nodelay: web.tcp_nodelay,
             http_port: web.http_port,
             https_port: web.https_port,
             bind_addresses: web.bind_addresses.clone(),
@@ -1290,6 +1292,7 @@ impl WebConfigResponse {
 #[typeshare]
 #[derive(Debug, Deserialize)]
 pub struct WebConfigUpdate {
+    pub tcp_nodelay: Option<bool>,
     pub http_port: Option<u16>,
     pub https_port: Option<u16>,
     pub bind_addresses: Option<Vec<String>>,
@@ -1347,6 +1350,9 @@ impl WebConfigUpdate {
     }
 
     pub fn apply_to(&self, config: &mut crate::config::WebConfig) {
+        if let Some(enabled) = self.tcp_nodelay {
+            config.tcp_nodelay = enabled;
+        }
         if let Some(port) = self.http_port {
             config.http_port = port;
         }
