@@ -1323,6 +1323,7 @@ impl Streamer {
             clients: self.mjpeg_handler.client_count(),
             target_fps: config.fps,
             fps,
+            mjpeg: self.mjpeg_handler.diagnostics(),
         }
     }
 
@@ -1568,6 +1569,7 @@ pub struct StreamerStats {
     pub target_fps: u32,
     /// Current actual FPS
     pub fps: f32,
+    pub mjpeg: crate::stream::mjpeg::MjpegDiagnostics,
 }
 
 fn probe_subdev_signal(

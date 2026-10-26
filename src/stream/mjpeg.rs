@@ -24,6 +24,18 @@ use crate::video::VideoFrame;
 
 pub type ClientId = String;
 
+/// Cumulative since process startup; compare two samples while the source moves.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MjpegDiagnostics {
+    pub received_frames: u64,
+    pub published_frames: u64,
+    pub duplicate_frames: u64,
+    pub invalid_jpeg_frames: u64,
+    pub http_body_frames: u64,
+    pub current_frame_bytes: usize,
+    pub current_frame_age_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientSession {
     pub id: ClientId,
@@ -117,6 +129,11 @@ pub struct MjpegStreamHandler {
     #[cfg(feature = "desktop")]
     jpeg_encoder: ParkingMutex<Option<JpegEncoder>>,
     jpeg_quality: AtomicU64,
+    received_frames: AtomicU64,
+    published_frames: AtomicU64,
+    duplicate_frames: AtomicU64,
+    invalid_jpeg_frames: AtomicU64,
+    http_body_frames: AtomicU64,
 }
 
 impl MjpegStreamHandler {
@@ -140,6 +157,11 @@ impl MjpegStreamHandler {
             dropped_same_frames: AtomicU64::new(0),
             max_drop_same_frames: AtomicU64::new(max_drop),
             jpeg_quality: AtomicU64::new(80),
+            received_frames: AtomicU64::new(0),
+            published_frames: AtomicU64::new(0),
+            duplicate_frames: AtomicU64::new(0),
+            invalid_jpeg_frames: AtomicU64::new(0),
+            http_body_frames: AtomicU64::new(0),
         }
     }
 
@@ -149,6 +171,10 @@ impl MjpegStreamHandler {
     }
 
     pub fn update_frame(&self, frame: VideoFrame) {
+        self.received_frames.fetch_add(1, Ordering::Relaxed);
+        if frame.is_jpeg() && !frame.is_valid_jpeg() {
+            self.invalid_jpeg_frames.fetch_add(1, Ordering::Relaxed);
+        }
         let has_clients = !self.clients.read().is_empty();
         if !has_clients {
             self.dropped_same_frames.store(0, Ordering::Relaxed);
@@ -157,6 +183,7 @@ impl MjpegStreamHandler {
             *self.last_frame_ts.write() = Some(Instant::now());
 
             if frame.format.is_compressed() {
+                self.published_frames.fetch_add(1, Ordering::Relaxed);
                 self.current_frame.store(Arc::new(Some(frame)));
             } else {
                 self.current_frame.store(Arc::new(None));
@@ -197,6 +224,7 @@ impl MjpegStreamHandler {
                     };
 
                     if !should_force_send {
+                        self.duplicate_frames.fetch_add(1, Ordering::Relaxed);
                         self.dropped_same_frames.fetch_add(1, Ordering::Relaxed);
                         return;
                     }
@@ -210,6 +238,7 @@ impl MjpegStreamHandler {
         self.online.store(frame.online, Ordering::SeqCst);
         *self.last_frame_ts.write() = Some(Instant::now());
         self.current_frame.store(Arc::new(Some(frame)));
+        self.published_frames.fetch_add(1, Ordering::Relaxed);
 
         let _ = self.frame_notify.send(());
     }
@@ -389,6 +418,25 @@ impl MjpegStreamHandler {
         (**self.current_frame.load()).clone()
     }
 
+    pub fn diagnostics(&self) -> MjpegDiagnostics {
+        let frame = self.current_frame();
+        MjpegDiagnostics {
+            received_frames: self.received_frames.load(Ordering::Relaxed),
+            published_frames: self.published_frames.load(Ordering::Relaxed),
+            duplicate_frames: self.duplicate_frames.load(Ordering::Relaxed),
+            invalid_jpeg_frames: self.invalid_jpeg_frames.load(Ordering::Relaxed),
+            http_body_frames: self.http_body_frames.load(Ordering::Relaxed),
+            current_frame_bytes: frame.as_ref().map_or(0, VideoFrame::len),
+            current_frame_age_ms: frame.as_ref().map(|f| f.age().as_millis() as u64),
+        }
+    }
+
+    /// Counts handing a frame to Hyper, not delivery/decoding at the browser.
+    pub fn record_http_body_frame(&self, client_id: &str) {
+        self.http_body_frames.fetch_add(1, Ordering::Relaxed);
+        self.record_frame_sent(client_id);
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<()> {
         self.frame_notify.subscribe()
     }
@@ -563,6 +611,31 @@ mod tests {
             0,
             1,
         );
+    }
+
+    #[test]
+    fn diagnostics_distinguish_deduplication_from_invalid_payloads() {
+        let handler = Arc::new(MjpegStreamHandler::new());
+        let _guard = ClientGuard::new("diagnostics".into(), handler.clone());
+        let mut jpeg = vec![0; 256];
+        jpeg[..2].copy_from_slice(&[0xff, 0xd8]);
+        jpeg[254..].copy_from_slice(&[0xff, 0xd9]);
+        let frame = VideoFrame::from_vec(jpeg, Resolution::VGA, PixelFormat::Mjpeg, 0, 1);
+        handler.update_frame(frame.clone());
+        handler.update_frame(frame);
+        handler.update_frame(VideoFrame::from_vec(
+            vec![1; 256],
+            Resolution::VGA,
+            PixelFormat::Mjpeg,
+            0,
+            2,
+        ));
+        let stats = handler.diagnostics();
+        assert_eq!(stats.received_frames, 3);
+        assert_eq!(stats.published_frames, 2);
+        assert_eq!(stats.duplicate_frames, 1);
+        assert_eq!(stats.invalid_jpeg_frames, 1);
+        assert_eq!(stats.http_body_frames, 0);
     }
 
     #[test]

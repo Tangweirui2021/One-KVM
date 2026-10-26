@@ -1,0 +1,23 @@
+[package]
+name = "one-kvm-mjpeg-http-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Compile the production MJPEG handler/frame/HTTP modules without FFmpeg,
+# libyuv, audio, GPU encoders, or the full application startup sequence.
+[features]
+desktop = []
+
+[dependencies]
+arc-swap = "1.8"
+async-stream = "0.3"
+axum = "=0.8.9"
+bytes = "1"
+futures = "0.3"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
+tracing = "0.1"
+v4l2r = { path = "../../libs/v4l2r" }
+xxhash-rust = { version = "0.8", features = ["xxh64"] }

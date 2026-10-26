@@ -1,6 +1,7 @@
 mod audio_ws;
 mod error;
 mod handlers;
+mod mjpeg;
 mod routes;
 pub(crate) mod state;
 mod static_files;

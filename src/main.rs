@@ -106,20 +106,28 @@ struct ConfigurableNoDelayAcceptor {
     enabled: bool,
 }
 
-impl<S> axum_server::accept::Accept<tokio::net::TcpStream, S>
-    for ConfigurableNoDelayAcceptor
-{
+impl<S> axum_server::accept::Accept<tokio::net::TcpStream, S> for ConfigurableNoDelayAcceptor {
     type Stream = tokio::net::TcpStream;
     type Service = S;
     type Future = std::future::Ready<std::io::Result<(Self::Stream, Self::Service)>>;
 
     fn accept(&self, stream: tokio::net::TcpStream, service: S) -> Self::Future {
-        if self.enabled {
-            if let Err(err) = stream.set_nodelay(true) {
-                tracing::warn!("Failed to enable TCP_NODELAY on HTTPS connection: {}", err);
-            }
-        }
+        configure_web_tcp(&stream, self.enabled, "HTTPS");
         std::future::ready(Ok((stream, service)))
+    }
+}
+
+/// Apply both true and false explicitly and read back the actual socket value.
+fn configure_web_tcp(stream: &tokio::net::TcpStream, enabled: bool, protocol: &str) {
+    if let Err(err) = stream.set_nodelay(enabled) {
+        tracing::warn!(%protocol, requested = enabled, %err, "Failed to set TCP_NODELAY");
+    }
+    match stream.nodelay() {
+        Ok(actual) => tracing::debug!(
+            %protocol, peer = ?stream.peer_addr(), requested = enabled,
+            tcp_nodelay = actual, "Accepted web TCP connection"
+        ),
+        Err(err) => tracing::warn!(%protocol, %err, "Failed to read TCP_NODELAY"),
     }
 }
 
@@ -130,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
     init_logging(args.log_level);
 
     tracing::info!("Starting One-KVM v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("MJPEG delivery: latest-frame-v1");
     let platform = PlatformCapabilities::current();
     tracing::info!(
         "Platform mode: {:?} ({})",
@@ -161,7 +170,10 @@ async fn main() -> anyhow::Result<()> {
     let config = runtime.config();
     let state = runtime.state().clone();
 
-    tracing::info!("Web TCP_NODELAY: {} (changes require a restart)", config.web.tcp_nodelay);
+    tracing::info!(
+        "Web TCP_NODELAY: {} (changes require a restart)",
+        config.web.tcp_nodelay
+    );
     let tcp_nodelay = config.web.tcp_nodelay;
     let bind_ips = resolve_bind_addresses(&config.web)?;
     let scheme = if config.web.https_enabled {
@@ -242,7 +254,9 @@ async fn main() -> anyhow::Result<()> {
 
             let server = axum_server::from_tcp(listener)?
                 .acceptor(OpenSSLAcceptor::new(tls_config.clone()).acceptor(
-                    ConfigurableNoDelayAcceptor { enabled: tcp_nodelay },
+                    ConfigurableNoDelayAcceptor {
+                        enabled: tcp_nodelay,
+                    },
                 ))
                 .serve(app.clone().into_make_service());
             servers.push(server);
@@ -255,14 +269,9 @@ async fn main() -> anyhow::Result<()> {
             let local_addr = listener.local_addr()?;
             tracing::info!("Starting HTTP server on {}", local_addr);
 
-            let listener = tokio::net::TcpListener::from_std(listener)?
-                .tap_io(move |stream| {
-                    if tcp_nodelay {
-                        if let Err(err) = stream.set_nodelay(true) {
-                            tracing::warn!("Failed to enable TCP_NODELAY on HTTP connection: {}", err);
-                        }
-                    }
-                });
+            let listener = tokio::net::TcpListener::from_std(listener)?.tap_io(move |stream| {
+                configure_web_tcp(stream, tcp_nodelay, "HTTP");
+            });
             let server = axum::serve(listener, app.clone());
             servers.push(async move { server.await });
         }
@@ -514,4 +523,40 @@ fn generate_self_signed_cert() -> anyhow::Result<rcgen::CertifiedKey<rcgen::KeyP
 
     let certified_key = generate_simple_self_signed(subject_alt_names)?;
     Ok(certified_key)
+}
+
+#[cfg(test)]
+mod web_tcp_tests {
+    use super::*;
+
+    #[test]
+    fn cli_accepts_explicit_tcp_nodelay_values() {
+        for enabled in [true, false] {
+            let args = CliArgs::try_parse_from([
+                "one-kvm",
+                "--tcp-nodelay",
+                if enabled { "true" } else { "false" },
+            ])
+            .unwrap();
+            assert_eq!(args.tcp_nodelay, Some(enabled));
+        }
+        assert_eq!(
+            CliArgs::try_parse_from(["one-kvm"]).unwrap().tcp_nodelay,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_socket_option_can_be_enabled_and_disabled() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_client, accepted) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept()
+        );
+        let (stream, _) = accepted.unwrap();
+        for enabled in [true, false] {
+            configure_web_tcp(&stream, enabled, "test");
+            assert_eq!(stream.nodelay().unwrap(), enabled);
+        }
+    }
 }

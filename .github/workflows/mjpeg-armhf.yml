@@ -1,0 +1,85 @@
+name: MJPEG armhf test package
+
+on:
+  push:
+    branches: [fix/configurable-tcp-nodelay]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mjpeg-armhf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  transport-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: test/mjpeg-http
+      - name: Test production MJPEG transport modules
+        run: cargo test --locked --manifest-path test/mjpeg-http/Cargo.toml
+
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Match upstream: no pnpm/Corepack version requirement.
+      - name: Build frontend
+        working-directory: web
+        run: npm install && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mjpeg-web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  armhf:
+    needs: [transport-tests, frontend]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mjpeg-web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-cross-release
+          key: ${{ hashFiles('Cross.toml', 'build/cross/Dockerfile.*') }}
+          cache-all-crates: true
+      - name: Install cross
+        run: cargo install cross --version 0.2.5 --locked
+      - name: Build ARMv7 binary
+        run: bash build/build-images.sh armv7
+      - name: Package armhf DEB
+        run: bash build/package-deb.sh armhf
+      - name: Record revision and checksums
+        env:
+          BUILD_REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p target/mjpeg-artifact
+          cp target/debian/*_armhf.deb target/mjpeg-artifact/
+          cp target/armv7-unknown-linux-gnueabihf/release/one-kvm target/mjpeg-artifact/
+          printf '%s\n' "$BUILD_REVISION" > target/mjpeg-artifact/REVISION.txt
+          cd target/mjpeg-artifact
+          sha256sum one-kvm *.deb > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: one-kvm-mjpeg-armhf-${{ github.sha }}
+          path: target/mjpeg-artifact
+          if-no-files-found: error
+          retention-days: 7
