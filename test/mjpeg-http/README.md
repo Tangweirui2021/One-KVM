@@ -20,6 +20,9 @@ FFmpeg 开启 TCP_NODELAY 有效，并不等于已经证明 One-KVM 卡顿也只
 
 Actions 的 **MJPEG armhf test package** 会随此分支 push 自动执行，也支持手动运行。
 前端使用仓库现有的 Node 24 + `npm install && npm run build`，不依赖 pnpm。
+同时把 `vue-tsc` 锁定为 3.3.7：原先 `^3.3.7` 会安装 3.3.13，
+该版本在设置页 EasyTier 节点列表处产生 `Cannot find name 'i'` 错误；
+同一份页面代码在 3.3.7 下通过类型检查和构建。
 构建产物包含 ARMv7 程序、armhf DEB、提交号及 SHA256SUMS。
 
 本地沿用已经成功的交叉编译环境；前端可执行：
