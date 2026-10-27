@@ -1,0 +1,102 @@
+--- a/libavcodec/v4l2_buffers.c
++++ b/libavcodec/v4l2_buffers.c
+@@ -21,6 +21,8 @@
+  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+  */
+ 
++#include <limits.h>
++#include <stddef.h>
+ #include <linux/videodev2.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+@@ -337,6 +339,76 @@
+     return 0;
+ }
+ 
++/*
++ * The V4L2 raw queue may have a larger stride/height than the visible AVFrame.
++ * Copy only visible pixels, retain the driver's chroma offset, and extend
++ * edge pixels into padding. In particular, 1080-line NV12 must not be read as
++ * 1088 lines just because the driver requires macroblock-aligned storage.
++ */
++static int v4l2_buffer_copy_nv12(const AVFrame *frame, V4L2Buffer *out,
++                                 int dst_height)
++{
++    const int dst_stride = out->plane_info[0].bytesperline;
++    const unsigned int length = out->plane_info[0].length;
++    int row_bytes[2], rows[2], dst_rows[2];
++    uint64_t y_size, size;
++    int plane, row, x;
++
++    if (out->num_planes != 1 || !frame->data[0] || !frame->data[1] ||
++        frame->width <= 0 || frame->width >= INT_MAX ||
++        frame->height <= 0 || dst_height < frame->height || dst_stride <= 0)
++        return AVERROR(EINVAL);
++
++    row_bytes[0] = frame->width;
++    row_bytes[1] = 2 * AV_CEIL_RSHIFT(frame->width, 1);
++    rows[0] = frame->height;
++    rows[1] = AV_CEIL_RSHIFT(frame->height, 1);
++    dst_rows[0] = dst_height;
++    dst_rows[1] = AV_CEIL_RSHIFT(dst_height, 1);
++    y_size = (uint64_t)dst_stride * dst_rows[0];
++    size = y_size + (uint64_t)dst_stride * dst_rows[1];
++
++    if (size > length)
++        return AVERROR(EINVAL);
++    for (plane = 0; plane < 2; plane++) {
++        if (dst_stride < row_bytes[plane] ||
++            FFABS((int64_t)frame->linesize[plane]) < row_bytes[plane])
++            return AVERROR(EINVAL);
++    }
++
++    for (plane = 0; plane < 2; plane++) {
++        uint8_t *dst = (uint8_t *)out->plane_info[0].mm_addr +
++                       (plane ? y_size : 0);
++        const int sample_bytes = plane ? 2 : 1;
++
++        if (frame->linesize[plane] == row_bytes[plane] &&
++            dst_stride == row_bytes[plane]) {
++            memcpy(dst, frame->data[plane], (size_t)row_bytes[plane] * rows[plane]);
++        } else {
++            for (row = 0; row < rows[plane]; row++) {
++                uint8_t *line = dst + (size_t)row * dst_stride;
++                memcpy(line, frame->data[plane] +
++                       (ptrdiff_t)row * frame->linesize[plane], row_bytes[plane]);
++                for (x = row_bytes[plane]; x < dst_stride; x++)
++                    line[x] = line[row_bytes[plane] - sample_bytes +
++                                   (x - row_bytes[plane]) % sample_bytes];
++            }
++        }
++        for (row = rows[plane]; row < dst_rows[plane]; row++)
++            memcpy(dst + (size_t)row * dst_stride,
++                   dst + (size_t)(rows[plane] - 1) * dst_stride, dst_stride);
++    }
++
++    if (V4L2_TYPE_IS_MULTIPLANAR(out->buf.type)) {
++        out->planes[0].bytesused = size;
++        out->planes[0].length = length;
++    } else {
++        out->buf.bytesused = size;
++        out->buf.length = length;
++    }
++    return 0;
++}
++
+ static int v4l2_buffer_swframe_to_buf(const AVFrame *frame, V4L2Buffer *out)
+ {
+     int i, ret;
+@@ -346,6 +418,13 @@
+     int height       = V4L2_TYPE_IS_MULTIPLANAR(fmt.type) ?
+                        fmt.fmt.pix_mp.height : fmt.fmt.pix.height;
+     int is_planar_format = 0;
++
++    if (pixel_format == V4L2_PIX_FMT_NV12 || pixel_format == V4L2_PIX_FMT_NV21) {
++        if (frame->format != (pixel_format == V4L2_PIX_FMT_NV12 ?
++                            AV_PIX_FMT_NV12 : AV_PIX_FMT_NV21))
++            return AVERROR(EINVAL);
++        return v4l2_buffer_copy_nv12(frame, out, height);
++    }
+ 
+     switch (pixel_format) {
+     case V4L2_PIX_FMT_YUV420M:
