@@ -1,15 +1,15 @@
-name: MJPEG armhf test package
+name: Cedrus armhf test package
 
 on:
   push:
-    branches: [fix/configurable-tcp-nodelay]
+    branches: [fix/cedrus-nv12-height]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: mjpeg-armhf-${{ github.ref }}
+  group: cedrus-armhf-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -26,6 +26,27 @@ jobs:
       - name: Test production MJPEG transport modules
         run: cargo test --locked --manifest-path test/mjpeg-http/Cargo.toml
 
+  nv12-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test visible NV12 rows against guarded input buffers
+        shell: bash
+        run: |
+          set -euo pipefail
+          regression_root="$RUNNER_TEMP/cedrus-nv12-regression"
+          mkdir -p "$regression_root/patched/libavcodec"
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/nyanmisaka/ffmpeg-rockchip/40c412daccf08164493da0de990eb99a8948116b/libavcodec/v4l2_buffers.c \
+            -o "$regression_root/original.c"
+          cp "$regression_root/original.c" "$regression_root/patched/libavcodec/v4l2_buffers.c"
+          patch --batch --fuzz=0 -d "$regression_root/patched" -p1 \
+            < build/cross/patches/0002-v4l2-m2m-copy-visible-nv12-rows.patch
+          python3 build/cross/tests/test-v4l2-nv12-upload.py \
+            "$regression_root/patched/libavcodec/v4l2_buffers.c" \
+            --original "$regression_root/original.c"
+
   frontend:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
@@ -40,29 +61,31 @@ jobs:
         run: npm install && npm run build
       - uses: actions/upload-artifact@v4
         with:
-          name: mjpeg-web-dist
+          name: cedrus-web-dist
           path: web/dist
           if-no-files-found: error
           retention-days: 7
 
   armhf:
-    needs: [transport-tests, frontend]
+    needs: [transport-tests, nv12-tests, frontend]
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: mjpeg-web-dist
+          name: cedrus-web-dist
           path: web/dist
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: linux-cross-release
-          key: ${{ hashFiles('Cross.toml', 'build/cross/Dockerfile.*') }}
+          key: ${{ hashFiles('Cross.toml', 'build/cross/Dockerfile.*', 'build/cross/patches/*.patch') }}
           cache-all-crates: true
       - name: Install cross
         run: cargo install cross --version 0.2.5 --locked
+      - name: Force relinking of patched static FFmpeg
+        run: cargo clean -p hwcodec --target armv7-unknown-linux-gnueabihf
       - name: Build ARMv7 binary
         run: bash build/build-images.sh armv7
       - name: Package armhf DEB
@@ -71,15 +94,15 @@ jobs:
         env:
           BUILD_REVISION: ${{ github.sha }}
         run: |
-          mkdir -p target/mjpeg-artifact
-          cp target/debian/*_armhf.deb target/mjpeg-artifact/
-          cp target/armv7-unknown-linux-gnueabihf/release/one-kvm target/mjpeg-artifact/
-          printf '%s\n' "$BUILD_REVISION" > target/mjpeg-artifact/REVISION.txt
-          cd target/mjpeg-artifact
+          mkdir -p target/cedrus-artifact
+          cp target/debian/*_armhf.deb target/cedrus-artifact/
+          cp target/armv7-unknown-linux-gnueabihf/release/one-kvm target/cedrus-artifact/
+          printf '%s\n' "$BUILD_REVISION" > target/cedrus-artifact/REVISION.txt
+          cd target/cedrus-artifact
           sha256sum one-kvm *.deb > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: one-kvm-mjpeg-armhf-${{ github.sha }}
-          path: target/mjpeg-artifact
+          name: one-kvm-cedrus-armhf-${{ github.sha }}
+          path: target/cedrus-artifact
           if-no-files-found: error
           retention-days: 7
